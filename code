@@ -1,0 +1,81 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+import os
+
+# ---------- USER INPUT ----------
+input_path = input("Enter the full path to your Excel file: ").strip().strip('"')
+
+# ---------- CONFIG ----------
+if not os.path.exists(input_path):
+    raise FileNotFoundError(f"Excel file '{input_path}' not found. Please check the path.")
+
+# Output file will be saved in the same folder
+output_path = os.path.join(os.path.dirname(input_path), "customer_segments_excel.csv")
+K = 4
+RANDOM_STATE = 42
+
+# ---------- STEP 0: Load Excel data ----------
+df = pd.read_excel(input_path, engine="openpyxl")
+df.columns = [c.strip() for c in df.columns]  # clean header whitespace
+
+# Normalize date column name
+if "InvoiceDate" not in df.columns:
+    if "Date" in df.columns:
+        df.rename(columns={"Date": "InvoiceDate"}, inplace=True)
+    else:
+        raise ValueError("Excel must have 'InvoiceDate' or 'Date' column for purchase dates.")
+
+# Ensure required columns exist
+required = {"CustomerID", "InvoiceNo", "InvoiceDate", "Quantity", "UnitPrice"}
+missing = required - set(df.columns)
+if missing:
+    raise ValueError(f"Missing required columns in Excel: {missing}")
+
+# Parse dates
+df["InvoiceDate"] = pd.to_datetime(df["InvoiceDate"])
+
+# ---------- STEP 1: RFM Feature Engineering ----------
+df["Amount"] = df["Quantity"] * df["UnitPrice"]
+snapshot_date = df["InvoiceDate"].max() + pd.Timedelta(days=1)
+
+rfm = df.groupby("CustomerID").agg({
+    "InvoiceDate": lambda x: (snapshot_date - x.max()).days,  # Recency
+    "InvoiceNo": "nunique",                                   # Frequency
+    "Amount": "sum"                                           # Monetary
+}).reset_index()
+rfm.columns = ["CustomerID", "Recency", "Frequency", "Monetary"]
+
+# ---------- STEP 2: Scaling ----------
+scaler = StandardScaler()
+rfm_scaled = scaler.fit_transform(rfm[["Recency", "Frequency", "Monetary"]])
+
+# ---------- STEP 3: KMeans clustering ----------
+kmeans = KMeans(n_clusters=K, random_state=RANDOM_STATE, init="k-means++")
+rfm["Cluster"] = kmeans.fit_predict(rfm_scaled)
+
+# ---------- STEP 4: Save results ----------
+rfm.to_csv(output_path, index=False)
+print(f"✅ Saved customer segmentation to '{output_path}' with k={K} clusters.")
+
+# ---------- STEP 5: Visualization ----------
+plt.figure(figsize=(5, 4))
+plt.scatter(rfm["Recency"], rfm["Monetary"], c=rfm["Cluster"], cmap="tab10", s=60, edgecolor="k")
+plt.title("Recency vs Monetary (by cluster)")
+plt.xlabel("Recency (days since last purchase)")
+plt.ylabel("Monetary (total spent)")
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
+plt.figure(figsize=(5, 4))
+plt.scatter(rfm["Frequency"], rfm["Monetary"], c=rfm["Cluster"], cmap="tab10", s=60, edgecolor="k")
+plt.title("Frequency vs Monetary (by cluster)")
+plt.xlabel("Frequency (distinct invoices)")
+plt.ylabel("Monetary (total spent)")
+plt.grid(True)
+plt.tight_layout()
+plt.show()
+
